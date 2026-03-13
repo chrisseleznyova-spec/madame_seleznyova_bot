@@ -135,22 +135,14 @@ async def screen_describe(message: types.Message, state: FSMContext):
 @dp.message(Dialog.describe)
 async def screen_themes(message: types.Message, state: FSMContext):
     user_text = message.text[:500]
-    await state.update_data(situation=user_text, history=[
-        {"role": "user", "content": f"Моя ситуация: {user_text}"}
-    ])
+    history = [{"role": "user", "content": f"Моя ситуация: {user_text}"}]
+    await state.update_data(situation=user_text, history=history)
 
-    await message.answer("Продолжить", reply_markup=btn(["Продолжить"]))
-    await state.set_state(Dialog.themes)
-
-
-@dp.message(Dialog.themes, F.text == "Продолжить")
-async def generate_themes(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    history = data["history"]
+    await message.answer("Анализирую...", reply_markup=ReplyKeyboardRemove())
 
     history.append({
         "role": "user",
-        "content": "Проанализируй мою ситуацию и предложи 3 варианта темы (каждый в одну строку, без нумерации, коротко). Затем спроси: «Я правильно понимаю направление вашей ситуации?». Формат ответа: только три темы с новой строки, без лишних слов."
+        "content": "Проанализируй мою ситуацию и предложи ровно 3 варианта темы — каждый на отдельной строке, коротко (до 60 символов), без нумерации и лишних слов."
     })
 
     response = await ask_claude(history)
@@ -173,9 +165,9 @@ async def generate_themes(message: types.Message, state: FSMContext):
         "4. Другое — можете уточнить своими словами\n\n"
         "Я правильно понимаю направление вашей ситуации?"
     )
-    await message.answer(text, reply_markup=btn([themes[0], themes[1], themes[2], "Другое"]))
+    await state.update_data(history=history, themes=themes, question_count=0)
     await state.set_state(Dialog.questions)
-    await state.update_data(question_count=0)
+    await message.answer(text, reply_markup=btn([themes[0], themes[1], themes[2], "Другое"]))
 
 
 @dp.message(Dialog.questions)

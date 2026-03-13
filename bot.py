@@ -163,6 +163,10 @@ def create_docx(final_text: str) -> bytes:
     return buffer.read()
 
 
+WELCOME_PHOTO = os.environ.get("WELCOME_PHOTO_ID", "")
+WELCOME_PHOTO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ChatGPT Image 13 мар. 2026 г., 17_16_42.png")
+WELCOME_PHOTO = os.environ.get("WELCOME_PHOTO_ID", "")
+WELCOME_PHOTO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ChatGPT Image 13 мар. 2026 г., 17_16_42.png")
 PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-03-13-46"
 
 

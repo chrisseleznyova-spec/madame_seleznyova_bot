@@ -308,12 +308,22 @@ async def do_final(message: types.Message, state: FSMContext):
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
-        [InlineKeyboardButton(
-            text="📨 Отправить другу",
-            switch_inline_query="Я прошла разбор ситуации у бота «Мадам Селезнёва разбирает». Он задаёт несколько вопросов и точно собирает картину. Попробуй: @madame_seleznyova_bot"
-        )],
+        [InlineKeyboardButton(text="📨 Отправить другу", callback_data="share")],
     ])
     await message.answer(final_text, reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "share")
+async def share_handler(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    share_text = (
+        "Я прошла разбор ситуации у бота «Мадам Селезнёва разбирает».\n"
+        "Он задаёт несколько вопросов и довольно точно собирает картину происходящего.\n\n"
+        "Попробуй: @madame_seleznyova_bot"
+    )
+    await callback.message.answer(
+        f"Скопируйте и отправьте другу:\n\n{share_text}"
+    )
 
 
 @dp.callback_query(F.data == "save")

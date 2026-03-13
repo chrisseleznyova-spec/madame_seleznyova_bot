@@ -13,11 +13,9 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 )
 import anthropic
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 logging.basicConfig(level=logging.INFO)
 
@@ -122,76 +120,44 @@ def html_to_plain(text: str) -> str:
     return text
 
 
-# Шрифты лежат рядом с bot.py
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FONT_REGULAR = os.path.join(BASE_DIR, 'DejaVuSans.ttf')
-FONT_BOLD = os.path.join(BASE_DIR, 'DejaVuSans-Bold.ttf')
-FONT_ITALIC = os.path.join(BASE_DIR, 'DejaVuSans-Oblique.ttf')
+def create_docx(final_text: str) -> bytes:
+    doc = Document()
 
-try:
-    pdfmetrics.registerFont(TTFont('DejaVu', FONT_REGULAR))
-    pdfmetrics.registerFont(TTFont('DejaVu-Bold', FONT_BOLD))
-    pdfmetrics.registerFont(TTFont('DejaVu-Italic', FONT_ITALIC))
-    PDF_FONT = 'DejaVu'
-    PDF_FONT_BOLD = 'DejaVu-Bold'
-    PDF_FONT_ITALIC = 'DejaVu-Italic'
-except Exception:
-    PDF_FONT = 'Helvetica'
-    PDF_FONT_BOLD = 'Helvetica-Bold'
-    PDF_FONT_ITALIC = 'Helvetica-Oblique'
+    # Заголовок
+    title = doc.add_heading('Мадам Селезнёва разбирает', level=1)
+    title.runs[0].font.color.rgb = RGBColor(0x6B, 0x3F, 0xA0)
 
+    sub = doc.add_paragraph('Разбор вашей ситуации')
+    sub.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+    sub.runs[0].font.size = Pt(11)
 
-def create_pdf(final_text: str) -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4,
-        rightMargin=2.5*cm, leftMargin=2.5*cm,
-        topMargin=2.5*cm, bottomMargin=2.5*cm)
+    doc.add_paragraph()
 
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle('T', parent=styles['Normal'],
-        fontSize=18, fontName=PDF_FONT_BOLD,
-        textColor=colors.HexColor('#6B3FA0'), spaceAfter=4)
-    subtitle_style = ParagraphStyle('S', parent=styles['Normal'],
-        fontSize=11, fontName=PDF_FONT,
-        textColor=colors.HexColor('#888888'), spaceAfter=20)
-    heading_style = ParagraphStyle('H', parent=styles['Normal'],
-        fontSize=13, fontName=PDF_FONT_BOLD,
-        textColor=colors.HexColor('#3D2060'), spaceBefore=14, spaceAfter=4)
-    body_style = ParagraphStyle('B', parent=styles['Normal'],
-        fontSize=11, fontName=PDF_FONT,
-        textColor=colors.HexColor('#222222'), leading=16, spaceAfter=8)
-    italic_style = ParagraphStyle('I', parent=styles['Normal'],
-        fontSize=10, fontName=PDF_FONT_ITALIC,
-        textColor=colors.HexColor('#888888'), spaceBefore=16, leading=14)
-
-    story = [
-        Paragraph("Мадам Селезнёва разбирает", title_style),
-        Paragraph("Разбор вашей ситуации", subtitle_style),
-        Spacer(1, 0.2*cm),
-    ]
-
-    # Парсим HTML-секции
+    # Парсим секции по <b>заголовок</b>
     sections = re.split(r'<b>(.*?)</b>', final_text)
     for i, part in enumerate(sections):
         part = part.strip()
         if not part:
             continue
         if i % 2 == 1:
-            story.append(Paragraph(part, heading_style))
+            h = doc.add_heading(part, level=2)
+            if h.runs:
+                h.runs[0].font.color.rgb = RGBColor(0x3D, 0x20, 0x60)
         else:
             for line in part.split('\n'):
                 line = line.strip()
                 if not line:
-                    story.append(Spacer(1, 0.2*cm))
                     continue
-                if '<i>' in line:
-                    story.append(Paragraph(html_to_plain(line), italic_style))
-                else:
-                    story.append(Paragraph(html_to_plain(line), body_style))
+                plain = html_to_plain(line)
+                p = doc.add_paragraph(plain)
+                if p.runs:
+                    p.runs[0].font.size = Pt(11)
+                    if '<i>' in line:
+                        p.runs[0].font.italic = True
+                        p.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
 
-    story.append(Spacer(1, 1*cm))
-    doc.build(story)
+    buffer = io.BytesIO()
+    doc.save(buffer)
     buffer.seek(0)
     return buffer.read()
 
@@ -353,9 +319,9 @@ async def save_handler(callback: types.CallbackQuery, state: FSMContext):
     final_text = data.get("final_text", "")
     await callback.answer("Генерирую PDF...")
     try:
-        pdf_bytes = create_pdf(final_text)
-        pdf_file = BufferedInputFile(pdf_bytes, filename="razбор_madame_seleznyova.pdf")
-        await callback.message.answer_document(pdf_file, caption="Ваш разбор сохранён 📎")
+        docx_bytes = create_docx(final_text)
+        docx_file = BufferedInputFile(docx_bytes, filename="razбор_madame_seleznyova.docx")
+        await callback.message.answer_document(docx_file, caption="Ваш разбор сохранён 📎")
     except Exception as e:
         logging.error(f"PDF error: {e}")
         await callback.message.answer("Не удалось создать PDF. Разбор сохранён выше в чате.")

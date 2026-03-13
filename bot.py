@@ -494,7 +494,45 @@ async def save_handler(callback: types.CallbackQuery, state: FSMContext):
 
 async def after_final(message: types.Message, state: FSMContext):
     await state.set_state(Dialog.post_final)
+
+    # Сначала опрос про полезность
+    await asyncio.sleep(1)
     await message.answer(
+        "Скажите — этот разбор был для вас полезным?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, попал в точку", callback_data="fb_yes"),
+                InlineKeyboardButton(text="🤔 Частично", callback_data="fb_partly"),
+            ],
+            [InlineKeyboardButton(text="❌ Не очень", callback_data="fb_no")],
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("fb_"))
+async def feedback_handler(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    fb_map = {"fb_yes": "да", "fb_partly": "частично", "fb_no": "нет"}
+    fb_value = fb_map.get(callback.data, "")
+
+    # Сохраняем в статистику
+    stats = load_stats()
+    if "feedback" not in stats:
+        stats["feedback"] = []
+    stats["feedback"].append({"uid": str(callback.from_user.id), "value": fb_value, "date": str(date.today())})
+    save_stats(stats)
+
+    if callback.data == "fb_yes":
+        reply = "Рада слышать. Значит, картина сложилась."
+    elif callback.data == "fb_partly":
+        reply = "Понятно. Иногда одного разбора недостаточно — ситуация многослойная."
+    else:
+        reply = "Жаль. Возможно, тема оказалась сложнее или вопросы не попали в нужное место."
+
+    await callback.message.answer(reply)
+    await asyncio.sleep(1)
+
+    await callback.message.answer(
         "Если вам близок такой способ разбираться в сложных ситуациях —\n"
         "в моём канале я регулярно публикую похожие разборы и наблюдения.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -502,7 +540,7 @@ async def after_final(message: types.Message, state: FSMContext):
         ])
     )
     await asyncio.sleep(1)
-    await message.answer(
+    await callback.message.answer(
         "Иногда одного разбора достаточно, чтобы увидеть ситуацию яснее.\n\n"
         "Но если вы чувствуете, что хотите разобраться глубже, на сессии мы обычно делаем две вещи:\n"
         "разбираем, где именно застряла ситуация\n"
@@ -561,6 +599,16 @@ async def stats_handler(message: types.Message):
         text += f"\n🔥 <b>Популярные темы:</b>\n"
         for i, (theme, count) in enumerate(top_themes, 1):
             text += f"  {i}. {theme} — {count}\n"
+
+    # Фидбек
+    feedback = stats.get("feedback", [])
+    if feedback:
+        from collections import Counter
+        fb_counts = Counter(f["value"] for f in feedback)
+        text += f"\n💬 <b>Отзывы ({len(feedback)}):</b>\n"
+        text += f"  ✅ Да — {fb_counts.get('да', 0)}\n"
+        text += f"  🤔 Частично — {fb_counts.get('частично', 0)}\n"
+        text += f"  ❌ Нет — {fb_counts.get('нет', 0)}\n"
 
     if multi:
         text += f"\n🔁 <b>Возвращались:</b>\n"

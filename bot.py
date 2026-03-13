@@ -125,46 +125,36 @@ def create_docx(final_text: str) -> bytes:
 
     # Заголовок
     title = doc.add_heading('Мадам Селезнёва разбирает', level=1)
-    title.runs[0].font.color.rgb = RGBColor(0x6B, 0x3F, 0xA0)
+    if title.runs:
+        title.runs[0].font.color.rgb = RGBColor(0x6B, 0x3F, 0xA0)
 
     sub = doc.add_paragraph('Разбор вашей ситуации')
-    sub.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-    sub.runs[0].font.size = Pt(11)
+    if sub.runs:
+        sub.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+        sub.runs[0].font.size = Pt(11)
 
     doc.add_paragraph()
 
-    # Парсим секции по <b>заголовок</b>
-    sections = re.split(r'<b>(.*?)</b>', final_text)
+    # Убираем все HTML теги и пишем чистый текст
+    # Сначала заменяем <b>текст</b> → "▶ текст" чтобы выделить заголовки
+    text = re.sub(r'<b>(.*?)</b>', r'\n▶ \1\n', final_text)
+    text = re.sub(r'<i>(.*?)</i>', r'\1', text)
+    text = re.sub(r'<[^>]+>', '', text)
 
-    if len(sections) <= 1:
-        # Нет HTML-тегов — просто выводим весь текст построчно
-        plain = html_to_plain(final_text)
-        for line in plain.split('\n'):
-            line = line.strip()
-            if line:
-                p = doc.add_paragraph(line)
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('▶ '):
+            # Заголовок раздела
+            heading_text = line[2:]
+            h = doc.add_heading(heading_text, level=2)
+            if h.runs:
+                h.runs[0].font.color.rgb = RGBColor(0x3D, 0x20, 0x60)
+        else:
+            p = doc.add_paragraph(line)
+            if p.runs:
                 p.runs[0].font.size = Pt(11)
-    else:
-        for i, part in enumerate(sections):
-            part = part.strip()
-            if not part:
-                continue
-            if i % 2 == 1:
-                h = doc.add_heading(part, level=2)
-                if h.runs:
-                    h.runs[0].font.color.rgb = RGBColor(0x3D, 0x20, 0x60)
-            else:
-                for line in part.split('\n'):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    plain = html_to_plain(line)
-                    p = doc.add_paragraph(plain)
-                    if p.runs:
-                        p.runs[0].font.size = Pt(11)
-                        if '<i>' in line:
-                            p.runs[0].font.italic = True
-                            p.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
 
     buffer = io.BytesIO()
     doc.save(buffer)

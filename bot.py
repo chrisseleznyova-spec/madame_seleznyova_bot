@@ -163,6 +163,7 @@ def create_docx(final_text: str) -> bytes:
 
 
 WELCOME_PHOTO = os.environ.get("WELCOME_PHOTO_ID", "")
+WELCOME_PHOTO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ChatGPT Image 13 мар. 2026 г., 17_16_42.png")
 
 
 @dp.message(CommandStart())
@@ -182,6 +183,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if WELCOME_PHOTO:
         await message.answer_photo(
             photo=WELCOME_PHOTO,
+            caption=caption,
+            reply_markup=btn(["Разобрать ситуацию"])
+        )
+    elif os.path.exists(WELCOME_PHOTO_PATH):
+        photo_file = types.FSInputFile(WELCOME_PHOTO_PATH)
+        await message.answer_photo(
+            photo=photo_file,
             caption=caption,
             reply_markup=btn(["Разобрать ситуацию"])
         )

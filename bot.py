@@ -236,18 +236,18 @@ async def screen_themes(message: types.Message, state: FSMContext):
     history.append({
         "role": "user",
         "content": (
-            "Назови ровно 3 темы для разбора — каждая на отдельной строке. "
-            "Формат: короткая назывная фраза (существительное или глагол), без вопросов, без нумерации, до 50 символов. "
-            "Пример: 'Страх не оправдать ожидания', 'Конфликт с партнёром', 'Усталость от работы'. "
-            "Только три строки, ничего лишнего."
+            "Назови 2-3 темы для разбора — каждая на отдельной строке. "
+            "Формат: короткая назывная фраза, без вопросов, без нумерации, до 50 символов. "
+            "Пример: 'Страх после пережитого', 'Возвращение к нормальной жизни'. "
+            "Если видишь только 2 реальные темы — дай 2, не выдумывай третью. "
+            "Только темы, ничего лишнего."
         )
     })
     response = await ask_claude(history)
     history.append({"role": "assistant", "content": response})
 
     lines = [l.strip() for l in response.strip().split("\n") if l.strip()]
-    # Фильтруем вводные фразы и оставляем только короткие темы
-    skip_words = ["вот", "варианта", "варианты", "предлагаю", "можно разобрать", "три", "рассмотрим"]
+    skip_words = ["вот", "варианта", "варианты", "предлагаю", "можно разобрать", "три", "рассмотрим", "тем"]
     themes = []
     for l in lines:
         l_lower = l.lower()
@@ -257,20 +257,22 @@ async def screen_themes(message: types.Message, state: FSMContext):
             themes.append(l)
         if len(themes) == 3:
             break
-    if len(themes) < 3:
-        themes = (themes + ["Вариант 1", "Вариант 2", "Вариант 3"])[:3]
 
+    # Минимум 2 темы — если меньше, берём что есть
+    if len(themes) < 2:
+        themes = lines[:2] if len(lines) >= 2 else (lines + ["Другое"])[:2]
+
+    # Формируем текст и кнопки динамически
+    numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(themes))
+    next_num = len(themes) + 1
     text = (
-        "Похоже, что здесь может идти речь о:\n"
-        f"1. {themes[0]}\n"
-        f"2. {themes[1]}\n"
-        f"3. {themes[2]}\n"
-        "4. Другое — можете уточнить своими словами\n\n"
+        f"Похоже, что здесь может идти речь о:\n{numbered}\n"
+        f"{next_num}. Другое — можете уточнить своими словами\n\n"
         "Я правильно понимаю направление вашей ситуации?"
     )
     await state.update_data(history=history, themes=themes, question_count=0)
     await state.set_state(Dialog.questions)
-    await message.answer(text, reply_markup=btn([themes[0], themes[1], themes[2], "Другое"]))
+    await message.answer(text, reply_markup=btn([*themes, "Другое"]))
 
 
 @dp.message(Dialog.questions)

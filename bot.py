@@ -149,6 +149,7 @@ class Dialog(StatesGroup):
     consent = State()
     mini_age = State()
     mini_sphere = State()
+    mini_work = State()
     start = State()
     describe = State()
     questions = State()
@@ -254,9 +255,30 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(Dialog.mini_age)
+
+    # Сначала приветствие с фото
+    caption = (
+        "Здравствуйте.\n"
+        "Я — Мадам Селезнёва.\n\n"
+        "Задам несколько точных вопросов и попробую собрать картину вашей ситуации.\n\n"
+        "Это не терапия и не диагноз.\n"
+        "Но иногда уже по ответам становится видно, где именно всё запуталось."
+    )
+
+    if WELCOME_PHOTO:
+        await callback.message.answer_photo(photo=WELCOME_PHOTO, caption=caption)
+    elif os.path.exists(WELCOME_PHOTO_PATH):
+        photo_file = types.FSInputFile(WELCOME_PHOTO_PATH)
+        await callback.message.answer_photo(photo=photo_file, caption=caption)
+    else:
+        await callback.message.answer(caption)
+
+    await asyncio.sleep(1)
+
+    # Потом мини-тест
     await callback.message.answer(
         "Прежде чем начать — пара вопросов, чтобы я лучше понимала контекст.\n"
-        "Это займёт 10 секунд, и ваши ответы останутся конфиденциальными.\n\n"
+        "Ваши ответы конфиденциальны.\n\n"
         "Сколько вам лет?",
         reply_markup=btn(["до 25", "25–35", "35–45", "45+"])
     )
@@ -275,36 +297,37 @@ async def mini_age_handler(message: types.Message, state: FSMContext):
 @dp.message(Dialog.mini_sphere)
 async def mini_sphere_handler(message: types.Message, state: FSMContext):
     await state.update_data(user_sphere=message.text)
+    await state.set_state(Dialog.mini_work)
+    await message.answer(
+        "И последнее — чем вы занимаетесь по жизни? Напишите в свободной форме.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+
+@dp.message(Dialog.mini_work)
+async def mini_work_handler(message: types.Message, state: FSMContext):
+    await state.update_data(user_work=message.text)
     await state.set_state(Dialog.start)
 
-    # Сохраняем в статистику
+    # Сохраняем всё в статистику
     data = await state.get_data()
     stats = load_stats()
     uid = str(message.from_user.id)
     if uid in stats["users"]:
         stats["users"][uid]["age"] = data.get("user_age", "")
-        stats["users"][uid]["sphere"] = message.text
+        stats["users"][uid]["sphere"] = data.get("user_sphere", "")
+        stats["users"][uid]["work"] = message.text
         if "spheres" not in stats:
             stats["spheres"] = []
-        stats["spheres"].append({"sphere": message.text, "age": data.get("user_age", ""), "date": str(date.today())})
+        stats["spheres"].append({
+            "sphere": data.get("user_sphere", ""),
+            "age": data.get("user_age", ""),
+            "work": message.text,
+            "date": str(date.today())
+        })
         save_stats(stats)
 
-    caption = (
-        "Здравствуйте.\n"
-        "Я — Мадам Селезнёва.\n\n"
-        "Задам несколько точных вопросов и попробую собрать картину вашей ситуации.\n\n"
-        "Это не терапия и не диагноз.\n"
-        "Но иногда уже по ответам становится видно, где именно всё запуталось.\n\n"
-        "Если готовы — начнём."
-    )
-
-    if WELCOME_PHOTO:
-        await message.answer_photo(photo=WELCOME_PHOTO, caption=caption, reply_markup=btn(["Разобрать ситуацию"]))
-    elif os.path.exists(WELCOME_PHOTO_PATH):
-        photo_file = types.FSInputFile(WELCOME_PHOTO_PATH)
-        await message.answer_photo(photo=photo_file, caption=caption, reply_markup=btn(["Разобрать ситуацию"]))
-    else:
-        await message.answer(caption, reply_markup=btn(["Разобрать ситуацию"]))
+    await message.answer("Хорошо. Если готовы — начнём.", reply_markup=btn(["Разобрать ситуацию"]))
 
 
 @dp.message(Dialog.start, F.text == "Разобрать ситуацию")
@@ -724,6 +747,22 @@ async def send_weekly_report():
                     text += f"  • {sphere} — {count}\n"
 
             await bot.send_message(ADMIN_ID, text)
+
+            # Анализ профессий через Claude
+            works = [u.get("work", "") for u in stats["users"].values() if u.get("work")]
+            if len(works) >= 3:
+                work_prompt = (
+                    f"Вот список профессий/занятий пользователей бота психологического разбора: {works}. "
+                    f"Разбей по категориям (например: предприниматели, наёмные сотрудники, фрилансеры, в декрете и т.д.). "
+                    f"Напиши кратко какие категории преобладают и что это говорит об аудитории. "
+                    f"3-4 предложения, без лишнего."
+                )
+                work_response = anthropic_client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": work_prompt}]
+                )
+                await bot.send_message(ADMIN_ID, f"👩‍💼 <b>Анализ аудитории по профессиям:</b>\n\n{work_response.content[0].text}")
 
         except Exception as e:
             logging.error(f"Weekly report error: {e}")

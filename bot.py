@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-CHANNEL_URL = os.environ.get("CHANNEL_URL", "https://t.me/seleznyovaochemzadymalas")
+CHANNEL_URL = "https://t.me/seleznyovaochemzadymalas"
 SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
@@ -122,10 +122,11 @@ def html_to_plain(text: str) -> str:
     return text
 
 
-# Регистрируем шрифты DejaVu (поддержка кириллицы)
-FONT_REGULAR = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
-FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-FONT_ITALIC = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf'
+# Шрифты лежат рядом с bot.py
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_REGULAR = os.path.join(BASE_DIR, 'DejaVuSans.ttf')
+FONT_BOLD = os.path.join(BASE_DIR, 'DejaVuSans-Bold.ttf')
+FONT_ITALIC = os.path.join(BASE_DIR, 'DejaVuSans-Oblique.ttf')
 
 try:
     pdfmetrics.registerFont(TTFont('DejaVu', FONT_REGULAR))

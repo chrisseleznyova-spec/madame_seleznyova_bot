@@ -484,7 +484,7 @@ async def stats_handler(message: types.Message):
     await message.answer(text)
 
 
-
+async def main():
     await dp.start_polling(bot)
 
 

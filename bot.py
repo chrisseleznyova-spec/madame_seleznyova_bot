@@ -162,19 +162,31 @@ def create_docx(final_text: str) -> bytes:
     return buffer.read()
 
 
+WELCOME_PHOTO = os.environ.get("WELCOME_PHOTO_ID", "")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await state.set_state(Dialog.start)
-    await message.answer(
+
+    caption = (
         "Здравствуйте.\n"
         "Я — Мадам Селезнёва.\n\n"
-        "Я задам вам несколько точных вопросов и попробую собрать картину вашей ситуации.\n\n"
+        "Задам несколько точных вопросов и попробую собрать картину вашей ситуации.\n\n"
         "Это не терапия и не диагноз.\n"
         "Но иногда уже по ответам становится видно, где именно всё запуталось.\n\n"
-        "Если готовы — начнём.",
-        reply_markup=btn(["Разобрать ситуацию"])
+        "Если готовы — начнём."
     )
+
+    if WELCOME_PHOTO:
+        await message.answer_photo(
+            photo=WELCOME_PHOTO,
+            caption=caption,
+            reply_markup=btn(["Разобрать ситуацию"])
+        )
+    else:
+        await message.answer(caption, reply_markup=btn(["Разобрать ситуацию"]))
 
 
 @dp.message(Dialog.start, F.text == "Разобрать ситуацию")
@@ -308,7 +320,6 @@ async def do_final(message: types.Message, state: FSMContext):
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
-        [InlineKeyboardButton(text="📨 Отправить другу", callback_data="share")],
     ])
     await message.answer(final_text, reply_markup=keyboard)
 

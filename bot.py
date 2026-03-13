@@ -197,7 +197,12 @@ async def screen_themes(message: types.Message, state: FSMContext):
 
     history.append({
         "role": "user",
-        "content": "Предложи ровно 3 варианта темы — каждый на отдельной строке, коротко (до 60 символов), без нумерации."
+        "content": (
+            "Назови ровно 3 темы для разбора — каждая на отдельной строке. "
+            "Формат: короткая назывная фраза (существительное или глагол), без вопросов, без нумерации, до 50 символов. "
+            "Пример: 'Страх не оправдать ожидания', 'Конфликт с партнёром', 'Усталость от работы'. "
+            "Только три строки, ничего лишнего."
+        )
     })
     response = await ask_claude(history)
     history.append({"role": "assistant", "content": response})
@@ -238,9 +243,7 @@ async def handle_questions(message: types.Message, state: FSMContext):
     user_input = message.text
 
     if q_count == 0:
-        history.append({"role": "user", "content": f"Выбранная тема: {user_input}"})
-        history.append({"role": "assistant", "content": "Хорошо, буду отталкиваться от этого."})
-        history.append({"role": "user", "content": "Задай первый уточняющий вопрос — один, коротко, 1-2 предложения."})
+        history.append({"role": "user", "content": f"Пользователь выбрал направление: {user_input}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
         question = await ask_claude(history)
         history.append({"role": "assistant", "content": question})
         await state.update_data(history=history, question_count=1)
@@ -304,7 +307,7 @@ async def do_final(message: types.Message, state: FSMContext):
     await state.set_state(Dialog.final)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📎 Сохранить разбор (PDF)", callback_data="save")],
+        [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
         [InlineKeyboardButton(
             text="📨 Отправить другу",
             switch_inline_query="Я прошла разбор ситуации у бота «Мадам Селезнёва разбирает». Он задаёт несколько вопросов и точно собирает картину. Попробуй: @madame_seleznyova_bot"

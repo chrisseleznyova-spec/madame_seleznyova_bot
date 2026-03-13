@@ -171,10 +171,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await state.set_state(Dialog.consent)
     await message.answer(
-        "Прежде чем начать — важный момент.\n\n"
+        "Прежде чем начать — один момент.\n\n"
         "В ходе разбора вы будете делиться личными переживаниями. "
-        "Ваши ответы обрабатываются ИИ (Claude от Anthropic) и не сохраняются после завершения сессии.\n\n"
-        "Нажимая «Принимаю условия», вы соглашаетесь с обработкой текста ваших сообщений для формирования разбора.",
+        "Ваши ответы не сохраняются и не передаются третьим лицам после завершения сессии.\n\n"
+        "Нажимая «Принимаю условия», вы подтверждаете согласие на обработку текста ваших сообщений в рамках этого разбора.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📄 Политика конфиденциальности", url=PRIVACY_URL)],
             [InlineKeyboardButton(text="✅ Принимаю условия", callback_data="consent_accept")],

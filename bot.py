@@ -50,18 +50,36 @@ def save_stats(stats: dict):
         logging.error(f"Stats save error: {e}")
 
 
-def record_session(user_id: int, username: str):
+def record_session(user_id: int, username: str, source: str = ""):
     stats = load_stats()
     uid = str(user_id)
     today = str(date.today())
     now = datetime.now().isoformat(timespec="seconds")
     if uid not in stats["users"]:
-        stats["users"][uid] = {"username": username, "sessions": 0, "first": now, "last": now, "dates": []}
+        stats["users"][uid] = {"username": username, "sessions": 0, "first": now, "last": now, "dates": [], "completed": 0, "source": source}
     stats["users"][uid]["sessions"] += 1
     stats["users"][uid]["last"] = now
     stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "")
     if today not in stats["users"][uid]["dates"]:
         stats["users"][uid]["dates"].append(today)
+    if source and not stats["users"][uid].get("source"):
+        stats["users"][uid]["source"] = source
+    save_stats(stats)
+
+
+def record_theme(user_id: int, theme: str):
+    stats = load_stats()
+    if "themes" not in stats:
+        stats["themes"] = []
+    stats["themes"].append({"uid": str(user_id), "theme": theme, "date": str(date.today())})
+    save_stats(stats)
+
+
+def record_completion(user_id: int):
+    stats = load_stats()
+    uid = str(user_id)
+    if uid in stats["users"]:
+        stats["users"][uid]["completed"] = stats["users"][uid].get("completed", 0) + 1
     save_stats(stats)
 
 
@@ -325,6 +343,7 @@ async def handle_questions(message: types.Message, state: FSMContext):
     user_input = message.text
 
     if q_count == 0:
+        record_theme(message.from_user.id, user_input)
         history.append({"role": "user", "content": f"Пользователь выбрал направление: {user_input}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
         question = await ask_claude(history)
         history.append({"role": "assistant", "content": question})
@@ -387,6 +406,7 @@ async def do_final(message: types.Message, state: FSMContext):
     history.append({"role": "assistant", "content": final_text})
     await state.update_data(history=history, final_text=final_text)
     await state.set_state(Dialog.final)
+    record_completion(message.from_user.id)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
@@ -462,26 +482,60 @@ async def stats_handler(message: types.Message):
         return
     stats = load_stats()
     users = stats.get("users", {})
+    themes_log = stats.get("themes", [])
+
     total_users = len(users)
     total_sessions = sum(u["sessions"] for u in users.values())
+    total_completed = sum(u.get("completed", 0) for u in users.values())
     today = str(date.today())
     today_sessions = sum(1 for u in users.values() if today in u.get("dates", []))
     multi = [(uid, u) for uid, u in users.items() if u["sessions"] > 1]
     multi.sort(key=lambda x: x[1]["sessions"], reverse=True)
 
+    # Конверсия
+    conversion = round(total_completed / total_sessions * 100) if total_sessions else 0
+
+    # Топ тем
+    from collections import Counter
+    theme_counts = Counter(t["theme"] for t in themes_log)
+    top_themes = theme_counts.most_common(8)
+
     text = (
         f"📊 <b>Статистика бота</b>\n\n"
         f"👥 Уникальных пользователей: <b>{total_users}</b>\n"
         f"🔄 Всего сессий: <b>{total_sessions}</b>\n"
+        f"✅ Дошли до разбора: <b>{total_completed}</b> ({conversion}%)\n"
         f"📅 Сегодня: <b>{today_sessions}</b>\n"
     )
+
+    if top_themes:
+        text += f"\n🔥 <b>Популярные темы:</b>\n"
+        for i, (theme, count) in enumerate(top_themes, 1):
+            text += f"  {i}. {theme} — {count}\n"
+
     if multi:
-        text += f"\n🔁 <b>Возвращались больше 1 раза:</b>\n"
-        for uid, u in multi[:10]:
+        text += f"\n🔁 <b>Возвращались:</b>\n"
+        for uid, u in multi[:5]:
             name = u.get("username") or uid
             text += f"  @{name} — {u['sessions']} раз\n"
 
     await message.answer(text)
+
+    # Анализ тем через Claude если их достаточно
+    if len(themes_log) >= 5:
+        all_themes = [t["theme"] for t in themes_log]
+        analysis_prompt = (
+            f"Вот список тем которые выбирали пользователи бота психологического разбора: {all_themes}. "
+            f"Кратко (3-5 предложений): какие паттерны видны? Что чаще всего беспокоит аудиторию? "
+            f"Какую тему стоит раскрыть в контенте коучу?"
+        )
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            messages=[{"role": "user", "content": analysis_prompt}]
+        )
+        analysis = response.content[0].text
+        await message.answer(f"🧠 <b>Анализ тем:</b>\n\n{analysis}")
 
 
 async def main():

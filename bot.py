@@ -122,6 +122,24 @@ def html_to_plain(text: str) -> str:
     return text
 
 
+# Регистрируем шрифты DejaVu (поддержка кириллицы)
+FONT_REGULAR = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+FONT_ITALIC = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf'
+
+try:
+    pdfmetrics.registerFont(TTFont('DejaVu', FONT_REGULAR))
+    pdfmetrics.registerFont(TTFont('DejaVu-Bold', FONT_BOLD))
+    pdfmetrics.registerFont(TTFont('DejaVu-Italic', FONT_ITALIC))
+    PDF_FONT = 'DejaVu'
+    PDF_FONT_BOLD = 'DejaVu-Bold'
+    PDF_FONT_ITALIC = 'DejaVu-Italic'
+except Exception:
+    PDF_FONT = 'Helvetica'
+    PDF_FONT_BOLD = 'Helvetica-Bold'
+    PDF_FONT_ITALIC = 'Helvetica-Oblique'
+
+
 def create_pdf(final_text: str) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -131,19 +149,19 @@ def create_pdf(final_text: str) -> bytes:
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle('T', parent=styles['Normal'],
-        fontSize=18, fontName='Helvetica-Bold',
+        fontSize=18, fontName=PDF_FONT_BOLD,
         textColor=colors.HexColor('#6B3FA0'), spaceAfter=4)
     subtitle_style = ParagraphStyle('S', parent=styles['Normal'],
-        fontSize=11, fontName='Helvetica',
+        fontSize=11, fontName=PDF_FONT,
         textColor=colors.HexColor('#888888'), spaceAfter=20)
     heading_style = ParagraphStyle('H', parent=styles['Normal'],
-        fontSize=13, fontName='Helvetica-Bold',
+        fontSize=13, fontName=PDF_FONT_BOLD,
         textColor=colors.HexColor('#3D2060'), spaceBefore=14, spaceAfter=4)
     body_style = ParagraphStyle('B', parent=styles['Normal'],
-        fontSize=11, fontName='Helvetica',
+        fontSize=11, fontName=PDF_FONT,
         textColor=colors.HexColor('#222222'), leading=16, spaceAfter=8)
     italic_style = ParagraphStyle('I', parent=styles['Normal'],
-        fontSize=10, fontName='Helvetica-Oblique',
+        fontSize=10, fontName=PDF_FONT_ITALIC,
         textColor=colors.HexColor('#888888'), spaceBefore=16, leading=14)
 
     story = [
@@ -159,10 +177,8 @@ def create_pdf(final_text: str) -> bytes:
         if not part:
             continue
         if i % 2 == 1:
-            # Заголовок
             story.append(Paragraph(part, heading_style))
         else:
-            # Текст
             for line in part.split('\n'):
                 line = line.strip()
                 if not line:
@@ -185,7 +201,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(Dialog.start)
     await message.answer(
         "Здравствуйте.\n"
-        "Я — бот «Мадам Селезнёва разбирает».\n\n"
+        "Я — Мадам Селезнёва.\n\n"
         "Я задам вам несколько точных вопросов и попробую собрать картину вашей ситуации.\n\n"
         "Это не терапия и не диагноз.\n"
         "Но иногда уже по ответам становится видно, где именно всё запуталось.\n\n"
@@ -220,9 +236,19 @@ async def screen_themes(message: types.Message, state: FSMContext):
     history.append({"role": "assistant", "content": response})
 
     lines = [l.strip() for l in response.strip().split("\n") if l.strip()]
-    themes = [l for l in lines if len(l) < 80][:3]
+    # Фильтруем вводные фразы и оставляем только короткие темы
+    skip_words = ["вот", "варианта", "варианты", "предлагаю", "можно разобрать", "три", "рассмотрим"]
+    themes = []
+    for l in lines:
+        l_lower = l.lower()
+        if any(w in l_lower for w in skip_words):
+            continue
+        if len(l) < 80:
+            themes.append(l)
+        if len(themes) == 3:
+            break
     if len(themes) < 3:
-        themes = ["Вариант 1", "Вариант 2", "Вариант 3"]
+        themes = (themes + ["Вариант 1", "Вариант 2", "Вариант 3"])[:3]
 
     text = (
         "Похоже, что здесь может идти речь о:\n"

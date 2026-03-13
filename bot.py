@@ -3,8 +3,10 @@ import logging
 import io
 import re
 import asyncio
+import json
+from datetime import datetime, date
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -23,10 +25,46 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CHANNEL_URL = "https://t.me/seleznyovaochemzadymalas"
 SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats.json")
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def load_stats() -> dict:
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"users": {}}
+
+
+def save_stats(stats: dict):
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Stats save error: {e}")
+
+
+def record_session(user_id: int, username: str):
+    stats = load_stats()
+    uid = str(user_id)
+    today = str(date.today())
+    now = datetime.now().isoformat(timespec="seconds")
+    if uid not in stats["users"]:
+        stats["users"][uid] = {"username": username, "sessions": 0, "first": now, "last": now, "dates": []}
+    stats["users"][uid]["sessions"] += 1
+    stats["users"][uid]["last"] = now
+    stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "")
+    if today not in stats["users"][uid]["dates"]:
+        stats["users"][uid]["dates"].append(today)
+    save_stats(stats)
+
+
 
 SYSTEM_PROMPT = """Ты — ИИ-ассистент Кристины Селезнёвой, коуча ICF.
 
@@ -174,6 +212,8 @@ PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-03-13-46"
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await state.set_state(Dialog.consent)
+    user = message.from_user
+    record_session(user.id, user.username or user.full_name or "")
     await message.answer(
         "Прежде чем начать — один момент.\n\n"
         "В ходе разбора вы будете делиться личными переживаниями. "
@@ -416,7 +456,35 @@ async def second_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(Dialog.describe)
 
 
-async def main():
+@dp.message(Command("stats"))
+async def stats_handler(message: types.Message):
+    if ADMIN_ID and message.from_user.id != ADMIN_ID:
+        return
+    stats = load_stats()
+    users = stats.get("users", {})
+    total_users = len(users)
+    total_sessions = sum(u["sessions"] for u in users.values())
+    today = str(date.today())
+    today_sessions = sum(1 for u in users.values() if today in u.get("dates", []))
+    multi = [(uid, u) for uid, u in users.items() if u["sessions"] > 1]
+    multi.sort(key=lambda x: x[1]["sessions"], reverse=True)
+
+    text = (
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Уникальных пользователей: <b>{total_users}</b>\n"
+        f"🔄 Всего сессий: <b>{total_sessions}</b>\n"
+        f"📅 Сегодня: <b>{today_sessions}</b>\n"
+    )
+    if multi:
+        text += f"\n🔁 <b>Возвращались больше 1 раза:</b>\n"
+        for uid, u in multi[:10]:
+            name = u.get("username") or uid
+            text += f"  @{name} — {u['sessions']} раз\n"
+
+    await message.answer(text)
+
+
+
     await dp.start_polling(bot)
 
 

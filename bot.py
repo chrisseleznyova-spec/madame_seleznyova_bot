@@ -135,26 +135,36 @@ def create_docx(final_text: str) -> bytes:
 
     # Парсим секции по <b>заголовок</b>
     sections = re.split(r'<b>(.*?)</b>', final_text)
-    for i, part in enumerate(sections):
-        part = part.strip()
-        if not part:
-            continue
-        if i % 2 == 1:
-            h = doc.add_heading(part, level=2)
-            if h.runs:
-                h.runs[0].font.color.rgb = RGBColor(0x3D, 0x20, 0x60)
-        else:
-            for line in part.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                plain = html_to_plain(line)
-                p = doc.add_paragraph(plain)
-                if p.runs:
-                    p.runs[0].font.size = Pt(11)
-                    if '<i>' in line:
-                        p.runs[0].font.italic = True
-                        p.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    if len(sections) <= 1:
+        # Нет HTML-тегов — просто выводим весь текст построчно
+        plain = html_to_plain(final_text)
+        for line in plain.split('\n'):
+            line = line.strip()
+            if line:
+                p = doc.add_paragraph(line)
+                p.runs[0].font.size = Pt(11)
+    else:
+        for i, part in enumerate(sections):
+            part = part.strip()
+            if not part:
+                continue
+            if i % 2 == 1:
+                h = doc.add_heading(part, level=2)
+                if h.runs:
+                    h.runs[0].font.color.rgb = RGBColor(0x3D, 0x20, 0x60)
+            else:
+                for line in part.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    plain = html_to_plain(line)
+                    p = doc.add_paragraph(plain)
+                    if p.runs:
+                        p.runs[0].font.size = Pt(11)
+                        if '<i>' in line:
+                            p.runs[0].font.italic = True
+                            p.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
 
     buffer = io.BytesIO()
     doc.save(buffer)
@@ -317,8 +327,9 @@ async def do_final(message: types.Message, state: FSMContext):
 async def save_handler(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     final_text = data.get("final_text", "")
-    await callback.answer("Генерирую PDF...")
+    await callback.answer("Генерирую файл...")
     try:
+        logging.info(f"Final text preview: {final_text[:200]}")
         docx_bytes = create_docx(final_text)
         docx_file = BufferedInputFile(docx_bytes, filename="razбор_madame_seleznyova.docx")
         await callback.message.answer_document(docx_file, caption="Ваш разбор сохранён 📎")

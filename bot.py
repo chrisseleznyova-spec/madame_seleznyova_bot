@@ -27,7 +27,7 @@ CHANNEL_URL = "https://t.me/seleznyovaochemzadymalas"
 SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
-STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats.json")
+STATS_FILE = "/tmp/stats.json"
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
@@ -39,7 +39,7 @@ def load_stats() -> dict:
         with open(STATS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"users": {}}
+        return {"users": {}, "themes": [], "spheres": [], "feedback": []}
 
 
 def save_stats(stats: dict):
@@ -231,24 +231,30 @@ PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-03-13-46"
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    await state.set_state(Dialog.consent)
-    user = message.from_user
+    try:
+        await state.clear()
+        await state.set_state(Dialog.consent)
+        user = message.from_user
+        args = message.text.split()
+        source = args[1] if len(args) > 1 else "direct"
+        try:
+            record_session(user.id, user.username or user.full_name or "", source=source)
+        except Exception as e:
+            logging.error(f"record_session error: {e}")
 
-    # Реферальный источник из deep link (?start=instagram)
-    args = message.text.split()
-    source = args[1] if len(args) > 1 else "direct"
-    record_session(user.id, user.username or user.full_name or "", source=source)
-    await message.answer(
-        "Прежде чем начать — один момент.\n\n"
-        "В ходе разбора вы будете делиться личными переживаниями. "
-        "Ваши ответы не сохраняются и не передаются третьим лицам после завершения сессии.\n\n"
-        "Нажимая «Принимаю условия», вы подтверждаете согласие на обработку текста ваших сообщений в рамках этого разбора.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📄 Политика конфиденциальности", url=PRIVACY_URL)],
-            [InlineKeyboardButton(text="✅ Принимаю условия", callback_data="consent_accept")],
-        ])
-    )
+        await message.answer(
+            "Прежде чем начать — один момент.\n\n"
+            "В ходе разбора вы будете делиться личными переживаниями. "
+            "Ваши ответы не сохраняются и не передаются третьим лицам после завершения сессии.\n\n"
+            "Нажимая «Принимаю условия», вы подтверждаете согласие на обработку текста ваших сообщений в рамках этого разбора.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📄 Политика конфиденциальности", url=PRIVACY_URL)],
+                [InlineKeyboardButton(text="✅ Принимаю условия", callback_data="consent_accept")],
+            ])
+        )
+    except Exception as e:
+        logging.error(f"cmd_start error: {e}")
+        await message.answer("Что-то пошло не так. Попробуйте ещё раз — /start")
 
 
 @dp.callback_query(F.data == "consent_accept")

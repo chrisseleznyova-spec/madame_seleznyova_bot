@@ -254,9 +254,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "consent_accept")
 async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await state.set_state(Dialog.mini_age)
+    await state.set_state(Dialog.mini_sphere)
 
-    # Сначала приветствие с фото
     caption = (
         "Здравствуйте.\n"
         "Я — Мадам Селезнёва.\n\n"
@@ -274,60 +273,61 @@ async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(caption)
 
     await asyncio.sleep(1)
-
-    # Потом мини-тест
     await callback.message.answer(
-        "Прежде чем начать — пара вопросов, чтобы я лучше понимала контекст.\n"
-        "Ваши ответы конфиденциальны.\n\n"
-        "Сколько вам лет?",
-        reply_markup=btn(["до 25", "25–35", "35–45", "45+"])
+        "Один вопрос перед началом — чтобы я лучше понимала контекст.\n\n"
+        "Какая сфера жизни сейчас занимает больше всего мыслей?\n"
+        "<i>Выберите до двух вариантов, затем нажмите «Готово»</i>",
+        reply_markup=sphere_keyboard([])
     )
 
 
-@dp.message(Dialog.mini_age)
-async def mini_age_handler(message: types.Message, state: FSMContext):
-    await state.update_data(user_age=message.text)
-    await state.set_state(Dialog.mini_sphere)
-    await message.answer(
-        "Какая сфера жизни сейчас занимает больше всего мыслей?",
-        reply_markup=btn(["Отношения", "Работа и карьера", "Семья", "Я сама / внутреннее состояние"])
-    )
+def sphere_keyboard(selected: list) -> InlineKeyboardMarkup:
+    options = ["Отношения", "Работа и карьера", "Семья", "Я сама / внутреннее состояние"]
+    buttons = []
+    for opt in options:
+        mark = "✅ " if opt in selected else ""
+        buttons.append([InlineKeyboardButton(text=f"{mark}{opt}", callback_data=f"sphere_{opt}")])
+    buttons.append([InlineKeyboardButton(text="Готово →", callback_data="sphere_done")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@dp.message(Dialog.mini_sphere)
-async def mini_sphere_handler(message: types.Message, state: FSMContext):
-    await state.update_data(user_sphere=message.text)
-    await state.set_state(Dialog.mini_work)
-    await message.answer(
-        "И последнее — чем вы занимаетесь по жизни? Напишите в свободной форме.",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-
-@dp.message(Dialog.mini_work)
-async def mini_work_handler(message: types.Message, state: FSMContext):
-    await state.update_data(user_work=message.text)
-    await state.set_state(Dialog.start)
-
-    # Сохраняем всё в статистику
+@dp.callback_query(Dialog.mini_sphere, F.data.startswith("sphere_") & ~F.data.endswith("done"))
+async def sphere_toggle(callback: types.CallbackQuery, state: FSMContext):
+    chosen = callback.data[7:]  # убираем "sphere_"
     data = await state.get_data()
+    selected = data.get("selected_spheres", [])
+    if chosen in selected:
+        selected.remove(chosen)
+    elif len(selected) < 2:
+        selected.append(chosen)
+    await state.update_data(selected_spheres=selected)
+    await callback.message.edit_reply_markup(reply_markup=sphere_keyboard(selected))
+    await callback.answer()
+
+
+@dp.callback_query(Dialog.mini_sphere, F.data == "sphere_done")
+async def sphere_done(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    selected = data.get("selected_spheres", [])
+    if not selected:
+        await callback.answer("Выберите хотя бы один вариант", show_alert=True)
+        return
+
+    # Сохраняем в статистику
     stats = load_stats()
-    uid = str(message.from_user.id)
+    uid = str(callback.from_user.id)
+    sphere_str = ", ".join(selected)
     if uid in stats["users"]:
-        stats["users"][uid]["age"] = data.get("user_age", "")
-        stats["users"][uid]["sphere"] = data.get("user_sphere", "")
-        stats["users"][uid]["work"] = message.text
+        stats["users"][uid]["sphere"] = sphere_str
         if "spheres" not in stats:
             stats["spheres"] = []
-        stats["spheres"].append({
-            "sphere": data.get("user_sphere", ""),
-            "age": data.get("user_age", ""),
-            "work": message.text,
-            "date": str(date.today())
-        })
+        stats["spheres"].append({"sphere": sphere_str, "date": str(date.today())})
         save_stats(stats)
 
-    await message.answer("Хорошо. Если готовы — начнём.", reply_markup=btn(["Разобрать ситуацию"]))
+    await state.set_state(Dialog.start)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Хорошо. Если готовы — начнём.", reply_markup=btn(["Разобрать ситуацию"]))
 
 
 @dp.message(Dialog.start, F.text == "Разобрать ситуацию")

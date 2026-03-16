@@ -405,11 +405,18 @@ async def handle_questions(message: types.Message, state: FSMContext):
 
     if q_count == 0:
         record_theme(message.from_user.id, user_input)
+        # Предупреждение перед первым вопросом
+        await message.answer(
+            "Вопросы будут личными — это и есть суть разбора.\n"
+            "Чем честнее ответите, тем точнее картина.\n\n"
+            "<i>Всё конфиденциально: мы не собираем и не храним ваши ответы.</i>",
+            reply_markup=ReplyKeyboardRemove()
+        )
         history.append({"role": "user", "content": f"Пользователь выбрал направление: {user_input}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
         question = await ask_claude(history)
         history.append({"role": "assistant", "content": question})
         await state.update_data(history=history, question_count=1)
-        await message.answer(question, reply_markup=ReplyKeyboardRemove())
+        await message.answer(f"<b>Вопрос 1 из 4</b>\n\n{question}")
         return
 
     history.append({"role": "user", "content": user_input})
@@ -436,7 +443,8 @@ async def handle_questions(message: types.Message, state: FSMContext):
 
     history.append({"role": "assistant", "content": response})
     await state.update_data(history=history, question_count=q_count + 1)
-    await message.answer(response, reply_markup=ReplyKeyboardRemove())
+    progress = f"<b>Вопрос {q_count + 1} из 4</b>\n\n"
+    await message.answer(f"{progress}{response}")
 
 
 async def do_final(message: types.Message, state: FSMContext):

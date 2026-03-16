@@ -584,7 +584,7 @@ async def feedback_handler(callback: types.CallbackQuery, state: FSMContext):
         "и находим точки выхода и ресурсы, на которые можно опереться.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Записаться на сессию", url=SESSION_URL)],
-            [InlineKeyboardButton(text="Второй разбор — 300 ₽", callback_data="second")]
+            [InlineKeyboardButton(text="🔄 Пройти ещё один разбор", callback_data="second")]
         ])
     )
 

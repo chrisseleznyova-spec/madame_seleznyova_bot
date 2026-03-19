@@ -19,6 +19,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 import asyncpg
+from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,7 +30,7 @@ SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 DATABASE_URL = os.environ.get("DATABASE_PUBLIC_URL")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -638,32 +639,40 @@ async def stats_handler(message: types.Message):
     total_completed = stats["total_completed"] or 0
     conversion = round(total_completed / total_sessions * 100) if total_sessions else 0
 
-    text = (
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"👥 Уникальных пользователей: <b>{stats['total_users']}</b>\n"
-        f"🔄 Всего сессий: <b>{total_sessions}</b>\n"
-        f"✅ Дошли до разбора: <b>{total_completed}</b> ({conversion}%)\n"
-        f"📅 Сегодня: <b>{stats['today_sessions']}</b>\n"
-    )
+    lines = []
+    lines.append("📊 СТАТИСТИКА БОТА")
+    lines.append("─" * 24)
+    lines.append(f"👥 Пользователей    {stats['total_users']}")
+    lines.append(f"🔄 Сессий           {total_sessions}")
+    lines.append(f"✅ До разбора       {total_completed} ({conversion}%)")
+    lines.append(f"📅 Сегодня          {stats['today_sessions']}")
 
     if stats["top_themes"]:
-        text += f"\n🔥 <b>Популярные темы:</b>\n"
-        for i, row in enumerate(stats["top_themes"], 1):
-            text += f"  {i}. {row['theme']} — {row['cnt']}\n"
+        lines.append("─" * 24)
+        lines.append("🔥 ТЕМЫ")
+        for row in stats["top_themes"]:
+            theme = row['theme'][:20]
+            cnt = row['cnt']
+            lines.append(f"{theme:<22}{cnt}")
 
     if stats["feedback"]:
         fb = {r["value"]: r["cnt"] for r in stats["feedback"]}
-        text += f"\n💬 <b>Отзывы ({sum(fb.values())}):</b>\n"
-        text += f"  ✅ Да — {fb.get('да', 0)}\n"
-        text += f"  🤔 Частично — {fb.get('частично', 0)}\n"
-        text += f"  ❌ Нет — {fb.get('нет', 0)}\n"
+        total_fb = sum(fb.values())
+        lines.append("─" * 24)
+        lines.append(f"💬 ОТЗЫВЫ")
+        lines.append(f"✅ Да              {fb.get('да', 0)}")
+        lines.append(f"🤔 Частично        {fb.get('частично', 0)}")
+        lines.append(f"❌ Нет             {fb.get('нет', 0)}")
 
     if stats["returning"]:
-        text += f"\n🔁 <b>Возвращались:</b>\n"
+        lines.append("─" * 24)
+        lines.append("🔁 ВЕРНУЛИСЬ")
         for row in stats["returning"]:
-            name = row["username"] or str(row["user_id"])
-            text += f"  @{name} — {row['sessions']} раз\n"
+            name = f"@{row['username']}" if row['username'] else str(row['user_id'])
+            name = name[:18]
+            lines.append(f"{name:<20}{row['sessions']} раза")
 
+    text = "<code>" + "\n".join(lines) + "</code>"
     await message.answer(text)
 
     if len(stats["all_themes"]) >= 5:

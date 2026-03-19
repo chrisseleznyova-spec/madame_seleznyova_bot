@@ -639,7 +639,11 @@ async def pick_remaining_theme(callback: types.CallbackQuery, state: FSMContext)
 
     new_theme = remaining[idx]
     situation = data.get("situation", "")
-    history = [{"role": "user", "content": f"Моя ситуация: {situation}"}]
+    history = [
+        {"role": "user", "content": f"Моя ситуация: {situation}"},
+        {"role": "assistant", "content": "Понятно, расскажите подробнее."},
+        {"role": "user", "content": f"Сейчас я хочу разобрать другую тему из этой же ситуации: «{new_theme}». Предыдущие вопросы про другую тему — забудь, начни с чистого листа по этой теме."}
+    ]
 
     await state.update_data(
         chosen_theme=new_theme,
@@ -660,7 +664,7 @@ async def pick_remaining_theme(callback: types.CallbackQuery, state: FSMContext)
         "<i>Всё конфиденциально: мы не собираем и не храним ваши ответы.</i>",
         reply_markup=ReplyKeyboardRemove()
     )
-    history.append({"role": "user", "content": f"Пользователь выбрал направление: {new_theme}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
+    history.append({"role": "user", "content": f"Задай первый уточняющий вопрос по теме «{new_theme}» — один вопрос, коротко, 1-2 предложения. Не повторяй вопросы которые задавал раньше."})
     question = await ask_claude(history)
     history.append({"role": "assistant", "content": question})
     await state.update_data(history=history, question_count=1, history_stack=[])

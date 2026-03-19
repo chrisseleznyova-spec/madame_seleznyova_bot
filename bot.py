@@ -18,6 +18,7 @@ import anthropic
 from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+import asyncpg
 
 logging.basicConfig(level=logging.INFO)
 
@@ -26,68 +27,153 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CHANNEL_URL = "https://t.me/seleznyovaochemzadymalas"
 SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-
-STATS_FILE = "/tmp/stats.json"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# --- PostgreSQL ---
 
-def load_stats() -> dict:
+async def get_db():
+    return await asyncpg.connect(DATABASE_URL)
+
+async def init_db():
+    conn = await get_db()
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            sessions INT DEFAULT 0,
+            completed INT DEFAULT 0,
+            first_seen TIMESTAMP DEFAULT NOW(),
+            last_seen TIMESTAMP DEFAULT NOW(),
+            source TEXT DEFAULT '',
+            sphere TEXT DEFAULT '',
+            last_theme TEXT DEFAULT '',
+            remind_at TIMESTAMP,
+            reminded BOOLEAN DEFAULT FALSE
+        );
+        CREATE TABLE IF NOT EXISTS themes (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            theme TEXT,
+            created_at DATE DEFAULT CURRENT_DATE
+        );
+        CREATE TABLE IF NOT EXISTS spheres (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            sphere TEXT,
+            created_at DATE DEFAULT CURRENT_DATE
+        );
+        CREATE TABLE IF NOT EXISTS feedback (
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            value TEXT,
+            created_at DATE DEFAULT CURRENT_DATE
+        );
+    """)
+    await conn.close()
+
+async def record_session(user_id: int, username: str, source: str = ""):
+    conn = await get_db()
     try:
-        with open(STATS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"users": {}, "themes": [], "spheres": [], "feedback": []}
+        existing = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if existing:
+            await conn.execute("""
+                UPDATE users SET sessions = sessions + 1, last_seen = NOW(), username = $2
+                WHERE user_id = $1
+            """, user_id, username)
+        else:
+            await conn.execute("""
+                INSERT INTO users (user_id, username, sessions, source)
+                VALUES ($1, $2, 1, $3)
+            """, user_id, username, source)
+    finally:
+        await conn.close()
 
-
-def save_stats(stats: dict):
+async def record_theme(user_id: int, theme: str):
+    conn = await get_db()
     try:
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.error(f"Stats save error: {e}")
+        await conn.execute("INSERT INTO themes (user_id, theme) VALUES ($1, $2)", user_id, theme)
+        await conn.execute("UPDATE users SET last_theme = $2 WHERE user_id = $1", user_id, theme)
+    finally:
+        await conn.close()
 
+async def record_completion(user_id: int):
+    conn = await get_db()
+    try:
+        await conn.execute("UPDATE users SET completed = completed + 1 WHERE user_id = $1", user_id)
+    finally:
+        await conn.close()
 
-def record_session(user_id: int, username: str, source: str = ""):
-    stats = load_stats()
-    uid = str(user_id)
-    today = str(date.today())
-    now = datetime.now().isoformat(timespec="seconds")
-    if uid not in stats["users"]:
-        stats["users"][uid] = {"username": username, "sessions": 0, "first": now, "last": now, "dates": [], "completed": 0, "source": source}
-    stats["users"][uid]["sessions"] += 1
-    stats["users"][uid]["last"] = now
-    stats["users"][uid]["username"] = username or stats["users"][uid].get("username", "")
-    if today not in stats["users"][uid]["dates"]:
-        stats["users"][uid]["dates"].append(today)
-    if source and not stats["users"][uid].get("source"):
-        stats["users"][uid]["source"] = source
-    save_stats(stats)
+async def record_sphere(user_id: int, sphere: str):
+    conn = await get_db()
+    try:
+        await conn.execute("UPDATE users SET sphere = $2 WHERE user_id = $1", user_id, sphere)
+        await conn.execute("INSERT INTO spheres (user_id, sphere) VALUES ($1, $2)", user_id, sphere)
+    finally:
+        await conn.close()
 
+async def record_feedback(user_id: int, value: str):
+    conn = await get_db()
+    try:
+        await conn.execute("INSERT INTO feedback (user_id, value) VALUES ($1, $2)", user_id, value)
+    finally:
+        await conn.close()
 
-def record_theme(user_id: int, theme: str):
-    stats = load_stats()
-    if "themes" not in stats:
-        stats["themes"] = []
-    stats["themes"].append({"uid": str(user_id), "theme": theme, "date": str(date.today())})
-    save_stats(stats)
+async def set_reminder(user_id: int, theme: str):
+    from datetime import timedelta
+    remind_dt = datetime.now() + timedelta(days=3)
+    conn = await get_db()
+    try:
+        await conn.execute("""
+            UPDATE users SET last_theme = $2, remind_at = $3, reminded = FALSE
+            WHERE user_id = $1
+        """, user_id, theme, remind_dt)
+    finally:
+        await conn.close()
 
+async def get_stats():
+    conn = await get_db()
+    try:
+        total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+        total_sessions = await conn.fetchval("SELECT COALESCE(SUM(sessions), 0) FROM users")
+        total_completed = await conn.fetchval("SELECT COALESCE(SUM(completed), 0) FROM users")
+        today_sessions = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE DATE(last_seen) = CURRENT_DATE"
+        )
+        top_themes = await conn.fetch(
+            "SELECT theme, COUNT(*) as cnt FROM themes GROUP BY theme ORDER BY cnt DESC LIMIT 8"
+        )
+        feedback_rows = await conn.fetch(
+            "SELECT value, COUNT(*) as cnt FROM feedback GROUP BY value"
+        )
+        top_spheres = await conn.fetch(
+            "SELECT sphere, COUNT(*) as cnt FROM spheres GROUP BY sphere ORDER BY cnt DESC LIMIT 4"
+        )
+        returning = await conn.fetch(
+            "SELECT user_id, username, sessions FROM users WHERE sessions > 1 ORDER BY sessions DESC LIMIT 5"
+        )
+        all_themes = await conn.fetch("SELECT theme FROM themes ORDER BY created_at DESC LIMIT 50")
+        return {
+            "total_users": total_users,
+            "total_sessions": total_sessions,
+            "total_completed": total_completed,
+            "today_sessions": today_sessions,
+            "top_themes": top_themes,
+            "feedback": feedback_rows,
+            "top_spheres": top_spheres,
+            "returning": returning,
+            "all_themes": [r["theme"] for r in all_themes],
+        }
+    finally:
+        await conn.close()
 
-def record_completion(user_id: int):
-    stats = load_stats()
-    uid = str(user_id)
-    if uid in stats["users"]:
-        stats["users"][uid]["completed"] = stats["users"][uid].get("completed", 0) + 1
-    save_stats(stats)
-
-
+# --- Системный промт ---
 
 SYSTEM_PROMPT = """Ты — ИИ-ассистент Кристины Селезнёвой, коуча ICF.
-
 Бот работает как персонаж «Мадам Селезнёва» и помогает людям коротко разобрать их жизненную ситуацию.
-
 Твоя задача — через несколько точных вопросов собрать картину происходящего и дать короткий, ясный разбор.
 
 СТИЛЬ ОБЩЕНИЯ:
@@ -113,13 +199,6 @@ SYSTEM_PROMPT = """Ты — ИИ-ассистент Кристины Селез�
 
 СТРУКТУРА ФИНАЛЬНОГО РАЗБОРА (до 1500 символов):
 СТРОГО используй HTML-теги <b>...</b> для заголовков разделов. Никаких звёздочек **текст** — только <b>текст</b>.
-
-Пример правильного форматирования:
-<b>Что происходит</b>
-Тут текст раздела.
-
-<b>Почему это происходит</b>
-Тут текст раздела.
 
 <b>Что происходит</b>
 [текст]
@@ -147,9 +226,7 @@ SYSTEM_PROMPT = """Ты — ИИ-ассистент Кристины Селез�
 
 class Dialog(StatesGroup):
     consent = State()
-    mini_age = State()
     mini_sphere = State()
-    mini_work = State()
     start = State()
     describe = State()
     questions = State()
@@ -184,31 +261,22 @@ def html_to_plain(text: str) -> str:
 
 def create_docx(final_text: str) -> bytes:
     doc = Document()
-
-    # Заголовок
     title = doc.add_heading('Мадам Селезнёва разбирает', level=1)
     if title.runs:
         title.runs[0].font.color.rgb = RGBColor(0x6B, 0x3F, 0xA0)
-
     sub = doc.add_paragraph('Разбор вашей ситуации')
     if sub.runs:
         sub.runs[0].font.color.rgb = RGBColor(0x88, 0x88, 0x88)
         sub.runs[0].font.size = Pt(11)
-
     doc.add_paragraph()
-
-    # Убираем все HTML теги и пишем чистый текст
-    # Сначала заменяем <b>текст</b> → "▶ текст" чтобы выделить заголовки
     text = re.sub(r'<b>(.*?)</b>', r'\n▶ \1\n', final_text)
     text = re.sub(r'<i>(.*?)</i>', r'\1', text)
     text = re.sub(r'<[^>]+>', '', text)
-
     for line in text.split('\n'):
         line = line.strip()
         if not line:
             continue
         if line.startswith('▶ '):
-            # Заголовок раздела
             heading_text = line[2:]
             h = doc.add_heading(heading_text, level=2)
             if h.runs:
@@ -217,7 +285,6 @@ def create_docx(final_text: str) -> bytes:
             p = doc.add_paragraph(line)
             if p.runs:
                 p.runs[0].font.size = Pt(11)
-
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -238,10 +305,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         args = message.text.split()
         source = args[1] if len(args) > 1 else "direct"
         try:
-            record_session(user.id, user.username or user.full_name or "", source=source)
+            await record_session(user.id, user.username or user.full_name or "", source=source)
         except Exception as e:
             logging.error(f"record_session error: {e}")
-
         await message.answer(
             "Прежде чем начать — один момент.\n\n"
             "В ходе разбора вы будете делиться личными переживаниями. "
@@ -261,7 +327,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
 async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(Dialog.mini_sphere)
-
     caption = (
         "Здравствуйте.\n"
         "Я — Мадам Селезнёва.\n\n"
@@ -269,7 +334,6 @@ async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
         "Это не терапия и не диагноз.\n"
         "Но иногда уже по ответам становится видно, где именно всё запуталось."
     )
-
     if WELCOME_PHOTO:
         await callback.message.answer_photo(photo=WELCOME_PHOTO, caption=caption)
     elif os.path.exists(WELCOME_PHOTO_PATH):
@@ -277,7 +341,6 @@ async def consent_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer_photo(photo=photo_file, caption=caption)
     else:
         await callback.message.answer(caption)
-
     await asyncio.sleep(1)
     await callback.message.answer(
         "Один вопрос перед началом — чтобы я лучше понимала контекст.\n\n"
@@ -299,7 +362,7 @@ def sphere_keyboard(selected: list) -> InlineKeyboardMarkup:
 
 @dp.callback_query(Dialog.mini_sphere, F.data.startswith("sphere_") & ~F.data.endswith("done"))
 async def sphere_toggle(callback: types.CallbackQuery, state: FSMContext):
-    chosen = callback.data[7:]  # убираем "sphere_"
+    chosen = callback.data[7:]
     data = await state.get_data()
     selected = data.get("selected_spheres", [])
     if chosen in selected:
@@ -319,18 +382,11 @@ async def sphere_done(callback: types.CallbackQuery, state: FSMContext):
     if not selected:
         await callback.answer("Выберите хотя бы один вариант", show_alert=True)
         return
-
-    # Сохраняем в статистику
-    stats = load_stats()
-    uid = str(callback.from_user.id)
     sphere_str = ", ".join(selected)
-    if uid in stats["users"]:
-        stats["users"][uid]["sphere"] = sphere_str
-        if "spheres" not in stats:
-            stats["spheres"] = []
-        stats["spheres"].append({"sphere": sphere_str, "date": str(date.today())})
-        save_stats(stats)
-
+    try:
+        await record_sphere(callback.from_user.id, sphere_str)
+    except Exception as e:
+        logging.error(f"record_sphere error: {e}")
     await state.set_state(Dialog.start)
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("Хорошо. Если готовы — начнём.", reply_markup=btn(["Разобрать ситуацию"]))
@@ -353,7 +409,6 @@ async def screen_themes(message: types.Message, state: FSMContext):
     history = [{"role": "user", "content": f"Моя ситуация: {user_text}"}]
     await state.update_data(situation=user_text, history=history)
     await message.answer("Анализирую...", reply_markup=ReplyKeyboardRemove())
-
     history.append({
         "role": "user",
         "content": (
@@ -366,7 +421,6 @@ async def screen_themes(message: types.Message, state: FSMContext):
     })
     response = await ask_claude(history)
     history.append({"role": "assistant", "content": response})
-
     lines = [l.strip() for l in response.strip().split("\n") if l.strip()]
     skip_words = ["вот", "варианта", "варианты", "предлагаю", "можно разобрать", "три", "рассмотрим", "тем"]
     themes = []
@@ -378,12 +432,8 @@ async def screen_themes(message: types.Message, state: FSMContext):
             themes.append(l)
         if len(themes) == 3:
             break
-
-    # Минимум 2 темы — если меньше, берём что есть
     if len(themes) < 2:
         themes = lines[:2] if len(lines) >= 2 else (lines + ["Другое"])[:2]
-
-    # Формируем текст и кнопки динамически
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(themes))
     next_num = len(themes) + 1
     text = (
@@ -404,8 +454,10 @@ async def handle_questions(message: types.Message, state: FSMContext):
     user_input = message.text
 
     if q_count == 0:
-        record_theme(message.from_user.id, user_input)
-        # Предупреждение перед первым вопросом
+        try:
+            await record_theme(message.from_user.id, user_input)
+        except Exception as e:
+            logging.error(f"record_theme error: {e}")
         await message.answer(
             "Вопросы будут личными — это и есть суть разбора.\n"
             "Чем честнее ответите, тем точнее картина.\n\n"
@@ -450,9 +502,7 @@ async def handle_questions(message: types.Message, state: FSMContext):
 async def do_final(message: types.Message, state: FSMContext):
     data = await state.get_data()
     history = data.get("history", [])
-
     await message.answer("Собираю разбор...", reply_markup=ReplyKeyboardRemove())
-
     history.append({
         "role": "user",
         "content": (
@@ -470,47 +520,28 @@ async def do_final(message: types.Message, state: FSMContext):
             "Весь текст — до 1500 символов. Никаких --- разделителей."
         )
     })
-
     final_text = await ask_claude(history)
     history.append({"role": "assistant", "content": final_text})
     await state.update_data(history=history, final_text=final_text)
     await state.set_state(Dialog.final)
-    record_completion(message.from_user.id)
 
-    # Сохраняем тему для напоминания
+    try:
+        await record_completion(message.from_user.id)
+    except Exception as e:
+        logging.error(f"record_completion error: {e}")
+
     data = await state.get_data()
     themes = data.get("themes", [])
     chosen_theme = themes[0] if themes else ""
-    stats = load_stats()
-    uid = str(message.from_user.id)
-    if uid in stats["users"]:
-        stats["users"][uid]["last_theme"] = chosen_theme
-        stats["users"][uid]["remind_at"] = (datetime.now().replace(hour=11, minute=0, second=0, microsecond=0)
-                                             .isoformat() if True else "")
-        # Напоминание через 3 дня
-        from datetime import timedelta
-        remind_dt = datetime.now() + timedelta(days=3)
-        stats["users"][uid]["remind_at"] = remind_dt.isoformat(timespec="seconds")
-        stats["users"][uid]["reminded"] = False
-        save_stats(stats)
+    try:
+        await set_reminder(message.from_user.id, chosen_theme)
+    except Exception as e:
+        logging.error(f"set_reminder error: {e}")
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
     ])
     await message.answer(final_text, reply_markup=keyboard)
-
-
-@dp.callback_query(F.data == "share")
-async def share_handler(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    share_text = (
-        "Я прошла разбор ситуации у бота «Мадам Селезнёва разбирает».\n"
-        "Он задаёт несколько вопросов и довольно точно собирает картину происходящего.\n\n"
-        "Попробуй: @madame_seleznyova_bot"
-    )
-    await callback.message.answer(
-        f"Скопируйте и отправьте другу:\n\n{share_text}"
-    )
 
 
 @dp.callback_query(F.data == "save")
@@ -519,20 +550,17 @@ async def save_handler(callback: types.CallbackQuery, state: FSMContext):
     final_text = data.get("final_text", "")
     await callback.answer("Генерирую файл...")
     try:
-        logging.info(f"Final text preview: {final_text[:200]}")
         docx_bytes = create_docx(final_text)
         docx_file = BufferedInputFile(docx_bytes, filename="razбор_madame_seleznyova.docx")
         await callback.message.answer_document(docx_file, caption="Ваш разбор сохранён 📎")
     except Exception as e:
-        logging.error(f"PDF error: {e}")
-        await callback.message.answer("Не удалось создать PDF. Разбор сохранён выше в чате.")
+        logging.error(f"DOCX error: {e}")
+        await callback.message.answer("Не удалось создать файл. Разбор сохранён выше в чате.")
     await after_final(callback.message, state)
 
 
 async def after_final(message: types.Message, state: FSMContext):
     await state.set_state(Dialog.post_final)
-
-    # Сначала опрос про полезность
     await asyncio.sleep(1)
     await message.answer(
         "Скажите — этот разбор был для вас полезным?",
@@ -551,13 +579,10 @@ async def feedback_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     fb_map = {"fb_yes": "да", "fb_partly": "частично", "fb_no": "нет"}
     fb_value = fb_map.get(callback.data, "")
-
-    # Сохраняем в статистику
-    stats = load_stats()
-    if "feedback" not in stats:
-        stats["feedback"] = []
-    stats["feedback"].append({"uid": str(callback.from_user.id), "value": fb_value, "date": str(date.today())})
-    save_stats(stats)
+    try:
+        await record_feedback(callback.from_user.id, fb_value)
+    except Exception as e:
+        logging.error(f"record_feedback error: {e}")
 
     if callback.data == "fb_yes":
         reply = "Рада слышать. Значит, картина сложилась."
@@ -568,7 +593,6 @@ async def feedback_handler(callback: types.CallbackQuery, state: FSMContext):
 
     await callback.message.answer(reply)
     await asyncio.sleep(1)
-
     await callback.message.answer(
         "Если вам близок такой способ разбираться в сложных ситуациях —\n"
         "в моём канале я регулярно публикую похожие разборы и наблюдения.",
@@ -604,62 +628,47 @@ async def second_handler(callback: types.CallbackQuery, state: FSMContext):
 async def stats_handler(message: types.Message):
     if ADMIN_ID and message.from_user.id != ADMIN_ID:
         return
-    stats = load_stats()
-    users = stats.get("users", {})
-    themes_log = stats.get("themes", [])
+    try:
+        stats = await get_stats()
+    except Exception as e:
+        await message.answer(f"Ошибка получения статистики: {e}")
+        return
 
-    total_users = len(users)
-    total_sessions = sum(u["sessions"] for u in users.values())
-    total_completed = sum(u.get("completed", 0) for u in users.values())
-    today = str(date.today())
-    today_sessions = sum(1 for u in users.values() if today in u.get("dates", []))
-    multi = [(uid, u) for uid, u in users.items() if u["sessions"] > 1]
-    multi.sort(key=lambda x: x[1]["sessions"], reverse=True)
-
-    # Конверсия
+    total_sessions = stats["total_sessions"] or 0
+    total_completed = stats["total_completed"] or 0
     conversion = round(total_completed / total_sessions * 100) if total_sessions else 0
-
-    # Топ тем
-    from collections import Counter
-    theme_counts = Counter(t["theme"] for t in themes_log)
-    top_themes = theme_counts.most_common(8)
 
     text = (
         f"📊 <b>Статистика бота</b>\n\n"
-        f"👥 Уникальных пользователей: <b>{total_users}</b>\n"
+        f"👥 Уникальных пользователей: <b>{stats['total_users']}</b>\n"
         f"🔄 Всего сессий: <b>{total_sessions}</b>\n"
         f"✅ Дошли до разбора: <b>{total_completed}</b> ({conversion}%)\n"
-        f"📅 Сегодня: <b>{today_sessions}</b>\n"
+        f"📅 Сегодня: <b>{stats['today_sessions']}</b>\n"
     )
 
-    if top_themes:
+    if stats["top_themes"]:
         text += f"\n🔥 <b>Популярные темы:</b>\n"
-        for i, (theme, count) in enumerate(top_themes, 1):
-            text += f"  {i}. {theme} — {count}\n"
+        for i, row in enumerate(stats["top_themes"], 1):
+            text += f"  {i}. {row['theme']} — {row['cnt']}\n"
 
-    # Фидбек
-    feedback = stats.get("feedback", [])
-    if feedback:
-        from collections import Counter
-        fb_counts = Counter(f["value"] for f in feedback)
-        text += f"\n💬 <b>Отзывы ({len(feedback)}):</b>\n"
-        text += f"  ✅ Да — {fb_counts.get('да', 0)}\n"
-        text += f"  🤔 Частично — {fb_counts.get('частично', 0)}\n"
-        text += f"  ❌ Нет — {fb_counts.get('нет', 0)}\n"
+    if stats["feedback"]:
+        fb = {r["value"]: r["cnt"] for r in stats["feedback"]}
+        text += f"\n💬 <b>Отзывы ({sum(fb.values())}):</b>\n"
+        text += f"  ✅ Да — {fb.get('да', 0)}\n"
+        text += f"  🤔 Частично — {fb.get('частично', 0)}\n"
+        text += f"  ❌ Нет — {fb.get('нет', 0)}\n"
 
-    if multi:
+    if stats["returning"]:
         text += f"\n🔁 <b>Возвращались:</b>\n"
-        for uid, u in multi[:5]:
-            name = u.get("username") or uid
-            text += f"  @{name} — {u['sessions']} раз\n"
+        for row in stats["returning"]:
+            name = row["username"] or str(row["user_id"])
+            text += f"  @{name} — {row['sessions']} раз\n"
 
     await message.answer(text)
 
-    # Анализ тем через Claude если их достаточно
-    if len(themes_log) >= 5:
-        all_themes = [t["theme"] for t in themes_log]
+    if len(stats["all_themes"]) >= 5:
         analysis_prompt = (
-            f"Вот список тем которые выбирали пользователи бота психологического разбора: {all_themes}. "
+            f"Вот список тем которые выбирали пользователи бота психологического разбора: {stats['all_themes']}. "
             f"Кратко (3-5 предложений): какие паттерны видны? Что чаще всего беспокоит аудиторию? "
             f"Какую тему стоит раскрыть в контенте коучу?"
         )
@@ -668,124 +677,62 @@ async def stats_handler(message: types.Message):
             max_tokens=400,
             messages=[{"role": "user", "content": analysis_prompt}]
         )
-        analysis = response.content[0].text
-        await message.answer(f"🧠 <b>Анализ тем:</b>\n\n{analysis}")
+        await message.answer(f"🧠 <b>Анализ тем:</b>\n\n{response.content[0].text}")
+
+
+@dp.message()
+async def fallback_handler(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer(
+            "Напишите /start чтобы начать разбор.",
+            reply_markup=ReplyKeyboardRemove()
+        )
 
 
 async def send_reminders():
-    """Проверяем и отправляем напоминания через 3 дня"""
     while True:
         try:
-            stats = load_stats()
-            now = datetime.now()
-            changed = False
-            for uid, u in stats["users"].items():
-                if u.get("reminded") is False and u.get("remind_at"):
-                    remind_dt = datetime.fromisoformat(u["remind_at"])
-                    if now >= remind_dt:
-                        theme = u.get("last_theme", "")
-                        # Генерируем контекстное напоминание через Claude
-                        prompt = (
-                            f"Пользователь 3 дня назад прошёл разбор ситуации на тему: «{theme}». "
-                            f"Напиши короткое тёплое сообщение от Мадам Селезнёвой (2-3 предложения): "
-                            f"спроси как они, упомни тему разбора, задай один мягкий вопрос о том, "
-                            f"что изменилось или что удалось обдумать. "
-                            f"Затем предложи новый разбор если появилась другая ситуация. "
-                            f"Тон — тёплый, без навязчивости."
-                        )
-                        response = anthropic_client.messages.create(
-                            model="claude-sonnet-4-6",
-                            max_tokens=300,
-                            messages=[{"role": "user", "content": prompt}]
-                        )
-                        reminder_text = response.content[0].text
-                        reminder_text += "\n\nЕсли хотите разобрать новую ситуацию — просто напишите /start"
-                        try:
-                            await bot.send_message(int(uid), reminder_text)
-                            stats["users"][uid]["reminded"] = True
-                            changed = True
-                        except Exception as e:
-                            logging.error(f"Reminder error for {uid}: {e}")
-                            stats["users"][uid]["reminded"] = True
-                            changed = True
-            if changed:
-                save_stats(stats)
-        except Exception as e:
-            logging.error(f"Reminder loop error: {e}")
-        await asyncio.sleep(3600)  # Проверяем каждый час
+            conn = await get_db()
+            rows = await conn.fetch("""
+                SELECT user_id, last_theme FROM users
+                WHERE reminded = FALSE AND remind_at IS NOT NULL AND remind_at <= NOW()
+            """)
+            await conn.close()
 
-
-async def send_weekly_report():
-    """Еженедельный отчёт каждый понедельник в 11:00 МСК"""
-    while True:
-        try:
-            now = datetime.now()
-            # Понедельник = 0, 11:00
-            days_until_monday = (7 - now.weekday()) % 7 or 7
-            next_monday = now.replace(hour=8, minute=0, second=0, microsecond=0)  # 11:00 МСК = 08:00 UTC
-            next_monday = next_monday.replace(day=now.day) + __import__('datetime').timedelta(days=days_until_monday)
-            wait_seconds = (next_monday - now).total_seconds()
-            if wait_seconds < 0:
-                wait_seconds += 7 * 86400
-            await asyncio.sleep(max(wait_seconds, 60))
-
-            if not ADMIN_ID:
-                continue
-
-            stats = load_stats()
-            users = stats.get("users", {})
-            themes_log = stats.get("themes", [])
-            spheres_log = stats.get("spheres", [])
-
-            from collections import Counter
-            total_users = len(users)
-            total_sessions = sum(u["sessions"] for u in users.values())
-            total_completed = sum(u.get("completed", 0) for u in users.values())
-            conversion = round(total_completed / total_sessions * 100) if total_sessions else 0
-            top_themes = Counter(t["theme"] for t in themes_log).most_common(5)
-            top_spheres = Counter(s["sphere"] for s in spheres_log).most_common(4)
-
-            text = (
-                f"📊 <b>Еженедельный отчёт</b>\n\n"
-                f"👥 Всего пользователей: <b>{total_users}</b>\n"
-                f"🔄 Всего сессий: <b>{total_sessions}</b>\n"
-                f"✅ Конверсия до разбора: <b>{conversion}%</b>\n"
-            )
-            if top_themes:
-                text += "\n🔥 <b>Топ тем за всё время:</b>\n"
-                for theme, count in top_themes:
-                    text += f"  • {theme} — {count}\n"
-            if top_spheres:
-                text += "\n🌀 <b>Сферы жизни:</b>\n"
-                for sphere, count in top_spheres:
-                    text += f"  • {sphere} — {count}\n"
-
-            await bot.send_message(ADMIN_ID, text)
-
-            # Анализ профессий через Claude
-            works = [u.get("work", "") for u in stats["users"].values() if u.get("work")]
-            if len(works) >= 3:
-                work_prompt = (
-                    f"Вот список профессий/занятий пользователей бота психологического разбора: {works}. "
-                    f"Разбей по категориям (например: предприниматели, наёмные сотрудники, фрилансеры, в декрете и т.д.). "
-                    f"Напиши кратко какие категории преобладают и что это говорит об аудитории. "
-                    f"3-4 предложения, без лишнего."
+            for row in rows:
+                uid = row["user_id"]
+                theme = row["last_theme"] or ""
+                prompt = (
+                    f"Пользователь 3 дня назад прошёл разбор ситуации на тему: «{theme}». "
+                    f"Напиши короткое тёплое сообщение от Мадам Селезнёвой (2-3 предложения): "
+                    f"спроси как они, упомни тему разбора, задай один мягкий вопрос о том, "
+                    f"что изменилось или что удалось обдумать. "
+                    f"Затем предложи новый разбор если появилась другая ситуация. "
+                    f"Тон — тёплый, без навязчивости."
                 )
-                work_response = anthropic_client.messages.create(
+                response = anthropic_client.messages.create(
                     model="claude-sonnet-4-6",
                     max_tokens=300,
-                    messages=[{"role": "user", "content": work_prompt}]
+                    messages=[{"role": "user", "content": prompt}]
                 )
-                await bot.send_message(ADMIN_ID, f"👩‍💼 <b>Анализ аудитории по профессиям:</b>\n\n{work_response.content[0].text}")
-
+                reminder_text = response.content[0].text
+                reminder_text += "\n\nЕсли хотите разобрать новую ситуацию — просто напишите /start"
+                try:
+                    await bot.send_message(uid, reminder_text)
+                except Exception as e:
+                    logging.error(f"Reminder send error for {uid}: {e}")
+                conn2 = await get_db()
+                await conn2.execute("UPDATE users SET reminded = TRUE WHERE user_id = $1", uid)
+                await conn2.close()
         except Exception as e:
-            logging.error(f"Weekly report error: {e}")
-            await asyncio.sleep(3600)
+            logging.error(f"Reminder loop error: {e}")
+        await asyncio.sleep(3600)
 
 
 async def main():
+    await init_db()
     asyncio.create_task(send_reminders())
-    asyncio.create_task(send_weekly_report())
     await dp.start_polling(bot)
 
 

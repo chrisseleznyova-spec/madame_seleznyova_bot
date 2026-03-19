@@ -447,11 +447,59 @@ async def screen_themes(message: types.Message, state: FSMContext):
     await message.answer(text, reply_markup=btn([*themes, "Другое"]))
 
 
+def question_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="← Назад")]],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+
+
+@dp.message(Dialog.questions, F.text == "← Назад")
+async def handle_back(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    history = data.get("history", [])
+    q_count = data.get("question_count", 0)
+    history_stack = data.get("history_stack", [])
+
+    if q_count <= 1 or not history_stack:
+        # Возврат к выбору темы
+        themes = data.get("themes", [])
+        situation = data.get("situation", "")
+        history_init = [{"role": "user", "content": f"Моя ситуация: {situation}"}]
+        numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(themes))
+        next_num = len(themes) + 1
+        text = (
+            f"Похоже, что здесь может идти речь о:\n{numbered}\n"
+            f"{next_num}. Другое — можете уточнить своими словами\n\n"
+            "Я правильно понимаю направление вашей ситуации?"
+        )
+        await state.update_data(history=history_init, question_count=0, history_stack=[])
+        await message.answer(text, reply_markup=btn([*themes, "Другое"]))
+        return
+
+    # Откат на предыдущий шаг
+    prev_state = history_stack[-1]
+    history_stack = history_stack[:-1]
+    await state.update_data(
+        history=prev_state["history"],
+        question_count=prev_state["q_count"],
+        history_stack=history_stack
+    )
+    prev_q = prev_state["history"][-1]["content"] if prev_state["history"] else ""
+    progress = f"<b>Вопрос {prev_state['q_count']} из 4</b>\n\n"
+    await message.answer(
+        f"Вернулись на шаг назад.\n\n{progress}{prev_q}",
+        reply_markup=question_keyboard()
+    )
+
+
 @dp.message(Dialog.questions)
 async def handle_questions(message: types.Message, state: FSMContext):
     data = await state.get_data()
     history = data.get("history", [])
     q_count = data.get("question_count", 0)
+    history_stack = data.get("history_stack", [])
     user_input = message.text
 
     if q_count == 0:
@@ -468,14 +516,16 @@ async def handle_questions(message: types.Message, state: FSMContext):
         history.append({"role": "user", "content": f"Пользователь выбрал направление: {user_input}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
         question = await ask_claude(history)
         history.append({"role": "assistant", "content": question})
-        await state.update_data(history=history, question_count=1)
-        await message.answer(f"<b>Вопрос 1 из 4</b>\n\n{question}")
+        await state.update_data(history=history, question_count=1, history_stack=[], chosen_theme=user_input)
+        await message.answer(f"<b>Вопрос 1 из 4</b>\n\n{question}", reply_markup=question_keyboard())
         return
 
+    # Сохраняем текущее состояние в стек перед ответом
+    history_stack.append({"history": list(history), "q_count": q_count})
     history.append({"role": "user", "content": user_input})
 
     if q_count >= 6:
-        await state.update_data(history=history)
+        await state.update_data(history=history, history_stack=history_stack)
         await do_final(message, state)
         return
 
@@ -490,14 +540,14 @@ async def handle_questions(message: types.Message, state: FSMContext):
     response = await ask_claude(history)
 
     if "РАЗБОР" in response.upper() or q_count >= 5:
-        await state.update_data(history=history)
+        await state.update_data(history=history, history_stack=history_stack)
         await do_final(message, state)
         return
 
     history.append({"role": "assistant", "content": response})
-    await state.update_data(history=history, question_count=q_count + 1)
+    await state.update_data(history=history, question_count=q_count + 1, history_stack=history_stack)
     progress = f"<b>Вопрос {q_count + 1} из 4</b>\n\n"
-    await message.answer(f"{progress}{response}")
+    await message.answer(f"{progress}{response}", reply_markup=question_keyboard())
 
 
 async def do_final(message: types.Message, state: FSMContext):
@@ -539,10 +589,82 @@ async def do_final(message: types.Message, state: FSMContext):
     except Exception as e:
         logging.error(f"set_reminder error: {e}")
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")],
-    ])
-    await message.answer(final_text, reply_markup=keyboard)
+    # Кнопки сохранения + оставшиеся темы
+    data = await state.get_data()
+    themes = data.get("themes", [])
+    chosen_theme = data.get("chosen_theme", themes[0] if themes else "")
+    remaining = [t for t in themes if t != chosen_theme]
+
+    inline_buttons = [[InlineKeyboardButton(text="📎 Сохранить разбор (Word)", callback_data="save")]]
+    if remaining:
+        inline_buttons.append([InlineKeyboardButton(text="Другие темы из вашей ситуации →", callback_data="show_remaining")])
+
+    await message.answer(final_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_buttons))
+
+    # Всегда показываем следующие шаги — не ждём нажатия "Сохранить"
+    await asyncio.sleep(2)
+    await after_final(message, state)
+
+
+@dp.callback_query(F.data == "show_remaining")
+async def show_remaining_handler(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    themes = data.get("themes", [])
+    chosen_theme = data.get("chosen_theme", themes[0] if themes else "")
+    remaining = [t for t in themes if t != chosen_theme]
+
+    if not remaining:
+        await callback.message.answer("Других тем нет.")
+        return
+
+    buttons = [[InlineKeyboardButton(text=t, callback_data=f"theme_{i}")] for i, t in enumerate(remaining)]
+    await callback.message.answer(
+        "Хотите разобрать одну из оставшихся тем?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+
+
+@dp.callback_query(F.data.startswith("theme_"))
+async def pick_remaining_theme(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    themes = data.get("themes", [])
+    chosen_theme = data.get("chosen_theme", themes[0] if themes else "")
+    remaining = [t for t in themes if t != chosen_theme]
+
+    idx = int(callback.data.split("_")[1])
+    if idx >= len(remaining):
+        return
+
+    new_theme = remaining[idx]
+    situation = data.get("situation", "")
+    history = [{"role": "user", "content": f"Моя ситуация: {situation}"}]
+
+    await state.update_data(
+        chosen_theme=new_theme,
+        history=history,
+        question_count=0,
+        history_stack=[]
+    )
+    await state.set_state(Dialog.questions)
+
+    try:
+        await record_theme(callback.from_user.id, new_theme)
+    except Exception as e:
+        logging.error(f"record_theme error: {e}")
+
+    await callback.message.answer(
+        "Вопросы будут личными — это и есть суть разбора.\n"
+        "Чем честнее ответите, тем точнее картина.\n\n"
+        "<i>Всё конфиденциально: мы не собираем и не храним ваши ответы.</i>",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    history.append({"role": "user", "content": f"Пользователь выбрал направление: {new_theme}. Задай первый уточняющий вопрос по этой теме — один вопрос, коротко, 1-2 предложения. Не повторяй формулировку темы."})
+    question = await ask_claude(history)
+    history.append({"role": "assistant", "content": question})
+    await state.update_data(history=history, question_count=1, history_stack=[])
+    await callback.message.answer(f"<b>Вопрос 1 из 4</b>\n\n{question}", reply_markup=question_keyboard())
 
 
 @dp.callback_query(F.data == "save")
@@ -557,7 +679,6 @@ async def save_handler(callback: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         logging.error(f"DOCX error: {e}")
         await callback.message.answer("Не удалось создать файл. Разбор сохранён выше в чате.")
-    await after_final(callback.message, state)
 
 
 async def after_final(message: types.Message, state: FSMContext):

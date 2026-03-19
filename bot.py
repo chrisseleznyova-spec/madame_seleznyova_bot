@@ -27,7 +27,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CHANNEL_URL = "https://t.me/seleznyovaochemzadymalas"
 SESSION_URL = os.environ.get("SESSION_URL", "https://t.me/")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.environ.get("DATABASE_PUBLIC_URL")
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())

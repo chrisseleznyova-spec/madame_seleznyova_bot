@@ -615,7 +615,15 @@ async def show_remaining_handler(callback: types.CallbackQuery, state: FSMContex
     remaining = [t for t in themes if t != chosen_theme]
 
     if not remaining:
-        await callback.message.answer("Других тем нет.")
+        await callback.message.answer(
+            "Надеюсь, разборы были полезны и что-то стало немного яснее.\n\n"
+            "Если захотите — загляните в канал, там похожие разборы и наблюдения. "
+            "Или запишитесь на личную сессию — там можно разобраться глубже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Перейти в канал", url=CHANNEL_URL)],
+                [InlineKeyboardButton(text="Записаться на сессию", url=SESSION_URL)],
+            ])
+        )
         return
 
     buttons = [[InlineKeyboardButton(text=t, callback_data=f"theme_{i}")] for i, t in enumerate(remaining)]
@@ -658,12 +666,7 @@ async def pick_remaining_theme(callback: types.CallbackQuery, state: FSMContext)
     except Exception as e:
         logging.error(f"record_theme error: {e}")
 
-    await callback.message.answer(
-        "Вопросы будут личными — это и есть суть разбора.\n"
-        "Чем честнее ответите, тем точнее картина.\n\n"
-        "<i>Всё конфиденциально: мы не собираем и не храним ваши ответы.</i>",
-        reply_markup=ReplyKeyboardRemove()
-    )
+
     history.append({"role": "user", "content": f"Задай первый уточняющий вопрос по теме «{new_theme}» — один вопрос, коротко, 1-2 предложения. Не повторяй вопросы которые задавал раньше."})
     question = await ask_claude(history)
     history.append({"role": "assistant", "content": question})
